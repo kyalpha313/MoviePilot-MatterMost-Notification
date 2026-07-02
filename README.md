@@ -1,4 +1,4 @@
-# MoviePilot-Plugins
+# MoviePilot-MatterMost-Notification
 
 MoviePilot 第三方插件库。
 
@@ -7,7 +7,7 @@ MoviePilot 第三方插件库。
 MoviePilot → 设定 → 插件 → 插件市场地址中追加本仓库地址：
 
 ```
-https://github.com/kyalpha313/MoviePilot-Plugins
+https://github.com/kyalpha313/MoviePilot-MatterMost-Notification
 ```
 
 保存后到「插件市场」搜索安装。
