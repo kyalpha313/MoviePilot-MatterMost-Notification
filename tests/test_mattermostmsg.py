@@ -155,3 +155,104 @@ class TestSendFilters:
             "channel": None, "type": None, "title": "无类型消息", "text": "x",
         }))
         assert len(sent) == 1 and sent[0]["mtype_name"] is None
+
+
+class TestSendToMattermost:
+    def test_sends_attachment_post(self, base_config, fake_http):
+        plugin = _make_plugin(base_config)
+        plugin._send_msg(title="开始下载", text="沙丘2",
+                         image="https://img.example.com/p.jpg",
+                         link="https://mp.example.com/#/d",
+                         mtype_name="Download")
+        posts = [c for c in fake_http.calls if c["method"] == "post"]
+        assert len(posts) == 1
+        call = posts[0]
+        assert call["url"] == "https://mm.example.com/api/v4/posts"
+        assert call["headers"]["Authorization"] == "Bearer test-token"
+        assert call["headers"]["Content-Type"] == "application/json"
+        body = call["json"]
+        assert body["channel_id"] == base_config["channel"]
+        assert body["message"] == ""
+        att = body["props"]["attachments"][0]
+        assert att["title"] == "开始下载"
+        assert att["text"] == "沙丘2"
+        assert att["fallback"] == "开始下载"
+        assert att["color"] == "#2196F3"
+        assert att["title_link"] == "https://mp.example.com/#/d"
+        assert att["image_url"] == "https://img.example.com/p.jpg"
+
+    def test_unknown_mtype_uses_default_color(self, base_config, fake_http):
+        plugin = _make_plugin(base_config)
+        plugin._send_msg(title="t", text="x", mtype_name="FutureType")
+        att = fake_http.calls[-1]["json"]["props"]["attachments"][0]
+        assert att["color"] == "#607D8B"
+
+    def test_image_toggle_off(self, base_config, fake_http):
+        plugin = _make_plugin({**base_config, "send_image": False})
+        plugin._send_msg(title="t", text="x",
+                         image="https://img.example.com/p.jpg")
+        att = fake_http.calls[-1]["json"]["props"]["attachments"][0]
+        assert "image_url" not in att
+
+    def test_non_http_link_and_image_ignored(self, base_config, fake_http):
+        plugin = _make_plugin(base_config)
+        plugin._send_msg(title="t", text="x", image="/local/path.jpg",
+                         link="ftp://x")
+        att = fake_http.calls[-1]["json"]["props"]["attachments"][0]
+        assert "image_url" not in att and "title_link" not in att
+
+    def test_long_text_truncated(self, base_config, fake_http):
+        plugin = _make_plugin(base_config)
+        plugin._send_msg(title="t", text="x" * 5000)
+        att = fake_http.calls[-1]["json"]["props"]["attachments"][0]
+        assert len(att["text"]) < 4100
+        assert att["text"].endswith("（内容过长已截断）")
+
+    def test_degrades_to_plain_text_on_failure(self, base_config, fake_http):
+        fake_http.queue.append(
+            ("post", "/api/v4/posts",
+             fake_http.make_response(400, text="invalid props")))
+        plugin = _make_plugin(base_config)
+        plugin._send_msg(title="开始下载", text="沙丘2",
+                         link="https://mp.example.com/#/d",
+                         mtype_name="Download")
+        posts = [c for c in fake_http.calls if c["method"] == "post"]
+        assert len(posts) == 2
+        retry = posts[1]["json"]
+        assert "props" not in retry
+        assert "**开始下载**" in retry["message"]
+        assert "沙丘2" in retry["message"]
+        assert "https://mp.example.com/#/d" in retry["message"]
+
+    def test_skips_when_channel_id_missing(self, base_config, fake_http):
+        plugin = _make_plugin(base_config)
+        plugin._channel_id = None
+        plugin._send_msg(title="t", text="x")
+        assert [c for c in fake_http.calls if c["method"] == "post"] == []
+
+
+class TestChannelResolution:
+    def test_plain_channel_id_used_directly(self, base_config, fake_http):
+        plugin = _make_plugin(base_config)
+        assert plugin._channel_id == base_config["channel"]
+        assert fake_http.calls == []   # 纯ID不发任何请求
+
+    def test_team_slash_name_resolved_via_api(self, base_config, fake_http):
+        fake_http.queue.append(
+            ("get", "/api/v4/teams/name/myteam/channels/name/moviepilot",
+             fake_http.make_response(200, {"id": "resolved123"})))
+        plugin = _make_plugin({**base_config, "channel": "myteam/moviepilot"})
+        assert plugin._channel_id == "resolved123"
+
+    def test_resolution_failure_sets_none(self, base_config, fake_http):
+        fake_http.queue.append(
+            ("get", "/api/v4/teams/name/",
+             fake_http.make_response(404, text="not found")))
+        plugin = _make_plugin({**base_config, "channel": "myteam/nochan"})
+        assert plugin._channel_id is None
+
+    def test_no_resolution_when_config_incomplete(self, base_config, fake_http):
+        plugin = _make_plugin({**base_config, "token": "",
+                               "channel": "myteam/moviepilot"})
+        assert plugin._channel_id is None
+        assert fake_http.calls == []

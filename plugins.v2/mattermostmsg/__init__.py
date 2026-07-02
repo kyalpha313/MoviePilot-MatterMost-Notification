@@ -62,8 +62,12 @@ class MattermostMsg(_PluginBase):
             self._channel = (config.get("channel") or "").strip()
             self._send_image = config.get("send_image", True)
             self._msgtypes = config.get("msgtypes") or []
-        # 频道解析与测试通知在后续版本补全
-        self._channel_id = self._channel or None
+
+        # 解析频道ID（支持 26位ID 或 团队名/频道名 两种格式）
+        if self._server and self._token and self._channel:
+            self._channel_id = self._resolve_channel_id()
+        else:
+            self._channel_id = None
 
     def get_state(self) -> bool:
         return bool(self._enabled and self._server and self._token and self._channel)
@@ -268,12 +272,97 @@ class MattermostMsg(_PluginBase):
     def get_page(self) -> List[dict]:
         pass
 
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self._token}",
+            "Content-Type": "application/json",
+        }
+
+    def _resolve_channel_id(self) -> Optional[str]:
+        """
+        频道配置含 "/" 时按 团队名/频道名 调用API解析，否则原样作为频道ID
+        """
+        if "/" not in self._channel:
+            return self._channel
+        team_name, channel_name = self._channel.split("/", 1)
+        url = (f"{self._server}/api/v4/teams/name/{team_name.strip()}"
+               f"/channels/name/{channel_name.strip()}")
+        res = RequestUtils(headers=self._headers()).get_res(url)
+        if res is not None and res.status_code == 200:
+            channel_id = res.json().get("id")
+            logger.info(f"Mattermost 频道 {self._channel} 解析成功：{channel_id}")
+            return channel_id
+        status = res.status_code if res is not None else "无响应"
+        logger.error(f"Mattermost 频道 {self._channel} 解析失败（{status}），"
+                     f"请检查团队名/频道名是否正确、Bot是否已加入该团队")
+        return None
+
     def _send_msg(self, title: str, text: str = None, image: str = None,
                   link: str = None, mtype_name: str = None):
         """
-        发送消息到 Mattermost（完整实现见下一版本）
+        发送消息到 Mattermost：优先富附件，失败降级纯文本重试一次
         """
-        return None
+        try:
+            if not self._server or not self._token:
+                logger.warn("Mattermost 参数未配置，无法发送消息")
+                return
+            if not self._channel_id:
+                logger.warn("Mattermost 频道ID无效，无法发送消息（请检查频道配置）")
+                return
+            title = title or ""
+            text = text or ""
+            if len(text) > self._MAX_TEXT_LENGTH:
+                text = text[:self._MAX_TEXT_LENGTH] + "\n……（内容过长已截断）"
+            # 富附件
+            attachment = {
+                "fallback": title or text,
+                "color": self._COLOR_MAP.get(mtype_name, self._DEFAULT_COLOR),
+                "title": title,
+                "text": text,
+            }
+            if link and str(link).startswith("http"):
+                attachment["title_link"] = link
+            if self._send_image and image and str(image).startswith("http"):
+                attachment["image_url"] = image
+            payload = {
+                "channel_id": self._channel_id,
+                "message": "",
+                "props": {"attachments": [attachment]},
+            }
+            res = RequestUtils(headers=self._headers()).post_res(
+                f"{self._server}/api/v4/posts", json=payload)
+            if res is not None and res.status_code == 201:
+                logger.info(f"Mattermost 消息发送成功：{title}")
+                return
+            status = res.status_code if res is not None else "无响应"
+            body = res.text[:200] if res is not None else ""
+            logger.warn(f"Mattermost 附件消息发送失败（{status} {body}），"
+                        f"尝试降级为纯文本发送")
+            # 降级：纯 Markdown 文本
+            lines = []
+            if title:
+                lines.append(f"**{title}**")
+            if text:
+                lines.append(text)
+            if link and str(link).startswith("http"):
+                lines.append(f"[查看详情]({link})")
+            if self._send_image and image and str(image).startswith("http"):
+                lines.append(f"![image]({image})")
+            fallback_payload = {
+                "channel_id": self._channel_id,
+                "message": "\n\n".join(lines),
+            }
+            res = RequestUtils(headers=self._headers()).post_res(
+                f"{self._server}/api/v4/posts", json=fallback_payload)
+            if res is not None and res.status_code == 201:
+                logger.info(f"Mattermost 纯文本消息发送成功：{title}")
+            elif res is not None:
+                logger.warn(f"Mattermost 消息发送失败，错误码：{res.status_code}，"
+                            f"响应：{res.text[:200]}")
+            else:
+                logger.warn("Mattermost 消息发送失败：未获取到返回信息")
+        except Exception as e:
+            logger.error(f"Mattermost 消息发送异常：{str(e)}")
 
     @eventmanager.register(EventType.NoticeMessage)
     def send(self, event: Event):
