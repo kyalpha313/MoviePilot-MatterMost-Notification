@@ -67,3 +67,91 @@ class TestState:
     def test_server_trailing_slash_stripped(self, base_config):
         plugin = _make_plugin({**base_config, "server": "https://mm.example.com/"})
         assert plugin._server == "https://mm.example.com"
+
+
+class TestSendFilters:
+    @staticmethod
+    def _capture(plugin, monkeypatch):
+        sent = []
+        monkeypatch.setattr(plugin, "_send_msg",
+                            lambda **kwargs: sent.append(kwargs))
+        return sent
+
+    def test_forwards_broadcast_message(self, base_config, monkeypatch):
+        plugin = _make_plugin(base_config)
+        sent = self._capture(plugin, monkeypatch)
+        plugin.send(Event(EventType.NoticeMessage, {
+            "channel": None,
+            "type": NotificationType.Download,
+            "title": "开始下载",
+            "text": "沙丘2 已推送下载器",
+            "image": "https://image.tmdb.org/t/p/poster.jpg",
+            "link": "https://mp.example.com/#/downloading",
+        }))
+        assert sent == [{
+            "title": "开始下载",
+            "text": "沙丘2 已推送下载器",
+            "image": "https://image.tmdb.org/t/p/poster.jpg",
+            "link": "https://mp.example.com/#/downloading",
+            "mtype_name": "Download",
+        }]
+
+    def test_skips_when_disabled(self, base_config, monkeypatch):
+        plugin = _make_plugin({**base_config, "enabled": False})
+        sent = self._capture(plugin, monkeypatch)
+        plugin.send(Event(EventType.NoticeMessage,
+                          {"channel": None, "title": "t", "text": "x"}))
+        assert sent == []
+
+    def test_skips_empty_event_data(self, base_config, monkeypatch):
+        plugin = _make_plugin(base_config)
+        sent = self._capture(plugin, monkeypatch)
+        plugin.send(Event(EventType.NoticeMessage, None))
+        assert sent == []
+
+    def test_skips_channel_directed_message(self, base_config, monkeypatch):
+        plugin = _make_plugin(base_config)
+        sent = self._capture(plugin, monkeypatch)
+        plugin.send(Event(EventType.NoticeMessage, {
+            "channel": MessageChannel.Telegram,
+            "title": "定向消息", "text": "不应转发",
+        }))
+        assert sent == []
+
+    def test_skips_when_title_and_text_empty(self, base_config, monkeypatch):
+        plugin = _make_plugin(base_config)
+        sent = self._capture(plugin, monkeypatch)
+        plugin.send(Event(EventType.NoticeMessage,
+                          {"channel": None, "title": None, "text": ""}))
+        assert sent == []
+
+    def test_msgtypes_filter(self, base_config, monkeypatch):
+        plugin = _make_plugin({**base_config, "msgtypes": ["Subscribe"]})
+        sent = self._capture(plugin, monkeypatch)
+        plugin.send(Event(EventType.NoticeMessage, {
+            "channel": None, "type": NotificationType.Download,
+            "title": "开始下载", "text": "x",
+        }))
+        assert sent == []
+        plugin.send(Event(EventType.NoticeMessage, {
+            "channel": None, "type": NotificationType.Subscribe,
+            "title": "新增订阅", "text": "x",
+        }))
+        assert len(sent) == 1 and sent[0]["mtype_name"] == "Subscribe"
+
+    def test_empty_msgtypes_means_all(self, base_config, monkeypatch):
+        plugin = _make_plugin({**base_config, "msgtypes": []})
+        sent = self._capture(plugin, monkeypatch)
+        plugin.send(Event(EventType.NoticeMessage, {
+            "channel": None, "type": NotificationType.Other,
+            "title": "任意消息", "text": "x",
+        }))
+        assert len(sent) == 1
+
+    def test_message_without_type_is_forwarded(self, base_config, monkeypatch):
+        plugin = _make_plugin({**base_config, "msgtypes": ["Subscribe"]})
+        sent = self._capture(plugin, monkeypatch)
+        plugin.send(Event(EventType.NoticeMessage, {
+            "channel": None, "type": None, "title": "无类型消息", "text": "x",
+        }))
+        assert len(sent) == 1 and sent[0]["mtype_name"] is None

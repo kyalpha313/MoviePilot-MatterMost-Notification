@@ -268,6 +268,44 @@ class MattermostMsg(_PluginBase):
     def get_page(self) -> List[dict]:
         pass
 
+    def _send_msg(self, title: str, text: str = None, image: str = None,
+                  link: str = None, mtype_name: str = None):
+        """
+        发送消息到 Mattermost（完整实现见下一版本）
+        """
+        return None
+
+    @eventmanager.register(EventType.NoticeMessage)
+    def send(self, event: Event):
+        """
+        消息发送事件
+        """
+        if not self.get_state():
+            return
+        if not event.event_data:
+            return
+        msg_body = event.event_data
+        # 渠道：定向到内置渠道的消息不重复转发
+        channel = msg_body.get("channel")
+        if channel:
+            return
+        # 类型
+        msg_type: NotificationType = msg_body.get("type")
+        # 标题、正文、图片、链接
+        title = msg_body.get("title")
+        text = msg_body.get("text")
+        image = msg_body.get("image")
+        link = msg_body.get("link")
+        if not title and not text:
+            logger.warn("标题和内容不能同时为空")
+            return
+        if (msg_type and self._msgtypes
+                and msg_type.name not in self._msgtypes):
+            logger.info(f"消息类型 {msg_type.value} 未开启消息发送")
+            return
+        self._send_msg(title=title, text=text, image=image, link=link,
+                       mtype_name=msg_type.name if msg_type else None)
+
     def stop_service(self):
         """
         退出插件
