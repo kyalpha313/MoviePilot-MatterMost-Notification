@@ -256,3 +256,32 @@ class TestChannelResolution:
                                "channel": "myteam/moviepilot"})
         assert plugin._channel_id is None
         assert fake_http.calls == []
+
+
+class TestOnlyOnce:
+    def test_verifies_token_sends_test_and_resets(self, base_config, fake_http):
+        plugin = _make_plugin({**base_config, "onlyonce": True})
+        urls = [c["url"] for c in fake_http.calls]
+        assert "https://mm.example.com/api/v4/users/me" in urls
+        posts = [c for c in fake_http.calls if c["method"] == "post"]
+        assert len(posts) == 1
+        att = posts[0]["json"]["props"]["attachments"][0]
+        assert "测试" in att["title"]
+        # onlyonce 已复位并持久化（规避 MeoW v1.0.1 修复过的坑）
+        assert plugin._onlyonce is False
+        assert plugin.updated_configs[-1]["onlyonce"] is False
+        assert plugin.updated_configs[-1]["server"] == base_config["server"]
+
+    def test_no_test_message_when_token_invalid(self, base_config, fake_http):
+        fake_http.queue.append(
+            ("get", "/api/v4/users/me",
+             fake_http.make_response(401, text="unauthorized")))
+        plugin = _make_plugin({**base_config, "onlyonce": True})
+        assert [c for c in fake_http.calls if c["method"] == "post"] == []
+        # 即使验证失败也要复位开关
+        assert plugin.updated_configs[-1]["onlyonce"] is False
+
+    def test_no_side_effects_without_onlyonce(self, base_config, fake_http):
+        plugin = _make_plugin(base_config)
+        assert plugin.updated_configs == []
+        assert [c for c in fake_http.calls if c["method"] == "post"] == []

@@ -69,6 +69,21 @@ class MattermostMsg(_PluginBase):
         else:
             self._channel_id = None
 
+        # 测试通知：发送一条测试消息，并复位开关持久化
+        if self._onlyonce:
+            logger.info("Mattermost 插件测试：立即发送一条测试消息")
+            self._onlyonce = False
+            self.update_config({
+                "enabled": self._enabled,
+                "onlyonce": self._onlyonce,
+                "server": self._server,
+                "token": self._token,
+                "channel": self._channel,
+                "send_image": self._send_image,
+                "msgtypes": self._msgtypes,
+            })
+            self._send_test_message()
+
     def get_state(self) -> bool:
         return bool(self._enabled and self._server and self._token and self._channel)
 
@@ -296,6 +311,27 @@ class MattermostMsg(_PluginBase):
         logger.error(f"Mattermost 频道 {self._channel} 解析失败（{status}），"
                      f"请检查团队名/频道名是否正确、Bot是否已加入该团队")
         return None
+
+    def _send_test_message(self):
+        """
+        先验证令牌有效性，再发送测试消息
+        """
+        if not self._server or not self._token:
+            logger.error("Mattermost 服务器地址或访问令牌未配置，无法发送测试消息")
+            return
+        res = RequestUtils(headers=self._headers()).get_res(
+            f"{self._server}/api/v4/users/me")
+        if res is not None and res.status_code == 200:
+            logger.info(f"Mattermost 令牌验证成功，Bot 用户："
+                        f"{res.json().get('username')}")
+        else:
+            status = res.status_code if res is not None else "无响应"
+            logger.error(f"Mattermost 令牌验证失败（{status}），"
+                         f"请检查服务器地址与Bot访问令牌")
+            return
+        self._send_msg(title="Mattermost 消息测试通知",
+                       text="Mattermost 消息通知插件已启用。",
+                       mtype_name=None)
 
     def _send_msg(self, title: str, text: str = None, image: str = None,
                   link: str = None, mtype_name: str = None):
