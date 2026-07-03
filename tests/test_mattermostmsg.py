@@ -13,7 +13,7 @@ def _make_plugin(config):
 class TestMetadataAndForm:
     def test_metadata(self):
         assert MattermostMsg.plugin_name == "Mattermost消息通知"
-        assert MattermostMsg.plugin_version == "1.0.0"
+        assert MattermostMsg.plugin_version == "1.0.1"
         assert MattermostMsg.plugin_config_prefix == "mattermostmsg_"
         assert MattermostMsg.auth_level == 1
 
@@ -225,8 +225,7 @@ class TestSendToMattermost:
         assert "https://mp.example.com/#/d" in retry["message"]
 
     def test_skips_when_channel_id_missing(self, base_config, fake_http):
-        plugin = _make_plugin(base_config)
-        plugin._channel_id = None
+        plugin = _make_plugin({**base_config, "channel": ""})
         plugin._send_msg(title="t", text="x")
         assert [c for c in fake_http.calls if c["method"] == "post"] == []
 
@@ -237,23 +236,42 @@ class TestChannelResolution:
         assert plugin._channel_id == base_config["channel"]
         assert fake_http.calls == []   # 纯ID不发任何请求
 
-    def test_team_slash_name_resolved_via_api(self, base_config, fake_http):
+    def test_team_slash_name_not_resolved_while_saving(self, base_config, fake_http):
         fake_http.queue.append(
             ("get", "/api/v4/teams/name/myteam/channels/name/moviepilot",
              fake_http.make_response(200, {"id": "resolved123"})))
         plugin = _make_plugin({**base_config, "channel": "myteam/moviepilot"})
+        assert plugin._channel_id is None
+        assert fake_http.calls == []
+
+    def test_team_slash_name_resolved_lazily_when_sending(self, base_config, fake_http):
+        fake_http.queue.append(
+            ("get", "/api/v4/teams/name/myteam/channels/name/moviepilot",
+             fake_http.make_response(200, {"id": "resolved123"})))
+        plugin = _make_plugin({**base_config, "channel": "myteam/moviepilot"})
+        plugin._send_msg(title="t", text="x")
         assert plugin._channel_id == "resolved123"
+        assert [c["method"] for c in fake_http.calls] == ["get", "post"]
 
     def test_resolution_failure_sets_none(self, base_config, fake_http):
         fake_http.queue.append(
             ("get", "/api/v4/teams/name/",
              fake_http.make_response(404, text="not found")))
         plugin = _make_plugin({**base_config, "channel": "myteam/nochan"})
+        plugin._send_msg(title="t", text="x")
         assert plugin._channel_id is None
 
     def test_no_resolution_when_config_incomplete(self, base_config, fake_http):
         plugin = _make_plugin({**base_config, "token": "",
                                "channel": "myteam/moviepilot"})
+        assert plugin._channel_id is None
+        assert fake_http.calls == []
+
+    def test_resolution_exception_never_escapes_save(self, base_config, fake_http):
+        fake_http.queue.append(
+            ("get", "/api/v4/teams/name/myteam/channels/name/moviepilot",
+             RuntimeError("network boom")))
+        plugin = _make_plugin({**base_config, "channel": "myteam/moviepilot"})
         assert plugin._channel_id is None
         assert fake_http.calls == []
 
@@ -284,4 +302,12 @@ class TestOnlyOnce:
     def test_no_side_effects_without_onlyonce(self, base_config, fake_http):
         plugin = _make_plugin(base_config)
         assert plugin.updated_configs == []
+        assert [c for c in fake_http.calls if c["method"] == "post"] == []
+
+    def test_token_validation_exception_does_not_escape_save(self, base_config, fake_http):
+        fake_http.queue.append(
+            ("get", "/api/v4/users/me", RuntimeError("network boom")))
+        plugin = _make_plugin({**base_config, "onlyonce": True})
+        assert plugin._onlyonce is False
+        assert plugin.updated_configs[-1]["onlyonce"] is False
         assert [c for c in fake_http.calls if c["method"] == "post"] == []

@@ -3,11 +3,12 @@
     "name": "Mattermost消息通知",
     "description": "通过 Mattermost Bot 将 MoviePilot 通知推送到指定频道。",
     "labels": "消息通知",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "icon": "https://raw.githubusercontent.com/kyalpha313/MoviePilot-MatterMost-Notification/main/icons/Mattermost_A.png",
     "author": "kyalpha313",
     "level": 1,
     "history": {
+      "v1.0.1": "修复保存配置时外部网络异常可能导致 MoviePilot 保存接口失败的问题；频道名解析改为发送时延迟执行",
       "v1.0.0": "首个版本：支持通过 Mattermost Bot 推送富附件消息通知，支持消息类型过滤、频道名解析、失败自动降级纯文本"
     }
   }

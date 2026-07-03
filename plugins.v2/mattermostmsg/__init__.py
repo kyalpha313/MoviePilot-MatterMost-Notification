@@ -15,7 +15,7 @@ class MattermostMsg(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/kyalpha313/MoviePilot-MatterMost-Notification/main/icons/Mattermost_A.png"
     # 插件版本
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     # 插件作者
     plugin_author = "kyalpha313"
     # 作者主页
@@ -63,11 +63,10 @@ class MattermostMsg(_PluginBase):
             self._send_image = config.get("send_image", True)
             self._msgtypes = config.get("msgtypes") or []
 
-        # 解析频道ID（支持 26位ID 或 团队名/频道名 两种格式）
-        if self._server and self._token and self._channel:
-            self._channel_id = self._resolve_channel_id()
-        else:
-            self._channel_id = None
+        # 保存配置阶段不访问 Mattermost，避免外部网络异常影响 MoviePilot 保存接口
+        self._channel_id = (
+            self._channel if self._channel and "/" not in self._channel else None
+        )
 
         # 测试通知：发送一条测试消息，并复位开关持久化
         if self._onlyonce:
@@ -293,45 +292,73 @@ class MattermostMsg(_PluginBase):
             "Content-Type": "application/json",
         }
 
+    def _get_channel_id(self) -> Optional[str]:
+        """
+        获取频道ID。频道名格式延迟到真正发送消息时再解析，避免保存配置时访问外部网络。
+        """
+        if not self._channel:
+            return None
+        if "/" not in self._channel:
+            self._channel_id = self._channel
+            return self._channel_id
+        if self._channel_id:
+            return self._channel_id
+        self._channel_id = self._resolve_channel_id()
+        return self._channel_id
+
     def _resolve_channel_id(self) -> Optional[str]:
         """
         频道配置含 "/" 时按 团队名/频道名 调用API解析，否则原样作为频道ID
         """
-        if "/" not in self._channel:
-            return self._channel
-        team_name, channel_name = self._channel.split("/", 1)
-        url = (f"{self._server}/api/v4/teams/name/{team_name.strip()}"
-               f"/channels/name/{channel_name.strip()}")
-        res = RequestUtils(headers=self._headers()).get_res(url)
-        if res is not None and res.status_code == 200:
-            channel_id = res.json().get("id")
-            logger.info(f"Mattermost 频道 {self._channel} 解析成功：{channel_id}")
-            return channel_id
-        status = res.status_code if res is not None else "无响应"
-        logger.error(f"Mattermost 频道 {self._channel} 解析失败（{status}），"
-                     f"请检查团队名/频道名是否正确、Bot是否已加入该团队")
+        try:
+            if "/" not in self._channel:
+                return self._channel
+            team_name, channel_name = self._channel.split("/", 1)
+            url = (f"{self._server}/api/v4/teams/name/{team_name.strip()}"
+                   f"/channels/name/{channel_name.strip()}")
+            res = RequestUtils(headers=self._headers()).get_res(url)
+            if res is not None and res.status_code == 200:
+                try:
+                    channel_id = res.json().get("id")
+                except Exception as e:
+                    logger.error(f"Mattermost 频道解析响应异常：{str(e)}")
+                    return None
+                logger.info(f"Mattermost 频道 {self._channel} 解析成功：{channel_id}")
+                return channel_id
+            status = res.status_code if res is not None else "无响应"
+            logger.error(f"Mattermost 频道 {self._channel} 解析失败（{status}），"
+                         f"请检查团队名/频道名是否正确、Bot是否已加入该团队")
+        except Exception as e:
+            logger.error(f"Mattermost 频道 {self._channel} 解析异常：{str(e)}")
         return None
 
     def _send_test_message(self):
         """
         先验证令牌有效性，再发送测试消息
         """
-        if not self._server or not self._token:
-            logger.error("Mattermost 服务器地址或访问令牌未配置，无法发送测试消息")
-            return
-        res = RequestUtils(headers=self._headers()).get_res(
-            f"{self._server}/api/v4/users/me")
-        if res is not None and res.status_code == 200:
-            logger.info(f"Mattermost 令牌验证成功，Bot 用户："
-                        f"{res.json().get('username')}")
-        else:
-            status = res.status_code if res is not None else "无响应"
-            logger.error(f"Mattermost 令牌验证失败（{status}），"
-                         f"请检查服务器地址与Bot访问令牌")
-            return
-        self._send_msg(title="Mattermost 消息测试通知",
-                       text="Mattermost 消息通知插件已启用。",
-                       mtype_name=None)
+        try:
+            if not self._server or not self._token:
+                logger.error("Mattermost 服务器地址或访问令牌未配置，无法发送测试消息")
+                return
+            res = RequestUtils(headers=self._headers()).get_res(
+                f"{self._server}/api/v4/users/me")
+            if res is not None and res.status_code == 200:
+                try:
+                    username = res.json().get("username")
+                except Exception as e:
+                    logger.error(f"Mattermost 令牌验证响应异常：{str(e)}")
+                    return
+                logger.info(f"Mattermost 令牌验证成功，Bot 用户：{username}")
+            else:
+                status = res.status_code if res is not None else "无响应"
+                logger.error(f"Mattermost 令牌验证失败（{status}），"
+                             f"请检查服务器地址与Bot访问令牌")
+                return
+            self._send_msg(title="Mattermost 消息测试通知",
+                           text="Mattermost 消息通知插件已启用。",
+                           mtype_name=None)
+        except Exception as e:
+            logger.error(f"Mattermost 测试消息发送异常：{str(e)}")
 
     def _send_msg(self, title: str, text: str = None, image: str = None,
                   link: str = None, mtype_name: str = None):
@@ -342,7 +369,8 @@ class MattermostMsg(_PluginBase):
             if not self._server or not self._token:
                 logger.warn("Mattermost 参数未配置，无法发送消息")
                 return
-            if not self._channel_id:
+            channel_id = self._get_channel_id()
+            if not channel_id:
                 logger.warn("Mattermost 频道ID无效，无法发送消息（请检查频道配置）")
                 return
             title = title or ""
@@ -361,7 +389,7 @@ class MattermostMsg(_PluginBase):
             if self._send_image and image and str(image).startswith("http"):
                 attachment["image_url"] = image
             payload = {
-                "channel_id": self._channel_id,
+                "channel_id": channel_id,
                 "message": "",
                 "props": {"attachments": [attachment]},
             }
@@ -385,7 +413,7 @@ class MattermostMsg(_PluginBase):
             if self._send_image and image and str(image).startswith("http"):
                 lines.append(f"![image]({image})")
             fallback_payload = {
-                "channel_id": self._channel_id,
+                "channel_id": channel_id,
                 "message": "\n\n".join(lines),
             }
             res = RequestUtils(headers=self._headers()).post_res(

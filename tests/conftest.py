@@ -168,6 +168,8 @@ class FakeRequestUtils:
         for i, (m, sub, resp) in enumerate(FakeRequestUtils.queue):
             if m == method and sub in url:
                 FakeRequestUtils.queue.pop(i)
+                if isinstance(resp, Exception):
+                    raise resp
                 return resp
         return FakeResponse(201 if method == "post" else 200)
 
