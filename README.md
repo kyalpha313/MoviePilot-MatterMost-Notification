@@ -14,7 +14,7 @@ https://github.com/kyalpha313/MoviePilot-MatterMost-Notification
 
 ## 插件列表
 
-### Mattermost消息通知 (v1.0.1)
+### Mattermost消息通知 (v1.0.2)
 
 通过 Mattermost Bot 将 MoviePilot 的各类通知（下载、入库、订阅、站点等）推送到指定频道，
 富附件渲染（按消息类型着色 + 标题链接 + 海报图），发送失败自动降级纯文本。

@@ -203,9 +203,9 @@ def fake_http(monkeypatch):
 BASE_CONFIG = {
     "enabled": True,
     "onlyonce": False,
-    "server": "https://mm.example.com",
-    "token": "test-token",
-    "channel": "abcdefghijklmnopqrstuvwxyz",
+    "mm_host": "https://mm.example.com",
+    "mm_bot_key": "test-token",
+    "mm_room": "abcdefghijklmnopqrstuvwxyz",
     "send_image": True,
     "msgtypes": [],
 }

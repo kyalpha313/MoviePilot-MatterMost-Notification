@@ -1,3 +1,4 @@
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.event import Event, eventmanager
@@ -15,7 +16,7 @@ class MattermostMsg(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/kyalpha313/MoviePilot-MatterMost-Notification/main/icons/Mattermost_A.png"
     # 插件版本
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     # 插件作者
     plugin_author = "kyalpha313"
     # 作者主页
@@ -57,9 +58,15 @@ class MattermostMsg(_PluginBase):
         if config:
             self._enabled = config.get("enabled")
             self._onlyonce = config.get("onlyonce")
-            self._server = (config.get("server") or "").strip().rstrip("/")
-            self._token = (config.get("token") or "").strip()
-            self._channel = (config.get("channel") or "").strip()
+            self._server = (
+                config.get("mm_host") or config.get("server") or ""
+            ).strip().rstrip("/")
+            self._token = (
+                config.get("mm_bot_key") or config.get("token") or ""
+            ).strip()
+            self._channel = (
+                config.get("mm_room") or config.get("channel") or ""
+            ).strip()
             self._send_image = config.get("send_image", True)
             self._msgtypes = config.get("msgtypes") or []
 
@@ -70,18 +77,18 @@ class MattermostMsg(_PluginBase):
 
         # 测试通知：发送一条测试消息，并复位开关持久化
         if self._onlyonce:
-            logger.info("Mattermost 插件测试：立即发送一条测试消息")
+            logger.info("Mattermost 插件测试：后台发送一条测试消息")
             self._onlyonce = False
             self.update_config({
                 "enabled": self._enabled,
                 "onlyonce": self._onlyonce,
-                "server": self._server,
-                "token": self._token,
-                "channel": self._channel,
+                "mm_host": self._server,
+                "mm_bot_key": self._token,
+                "mm_room": self._channel,
                 "send_image": self._send_image,
                 "msgtypes": self._msgtypes,
             })
-            self._send_test_message()
+            self._start_test_message_thread()
 
     def get_state(self) -> bool:
         return bool(self._enabled and self._server and self._token and self._channel)
@@ -158,9 +165,12 @@ class MattermostMsg(_PluginBase):
                                     {
                                         "component": "VTextField",
                                         "props": {
-                                            "model": "server",
-                                            "label": "服务器地址",
+                                            "model": "mm_host",
+                                            "label": "Mattermost地址",
                                             "placeholder": "https://mm.example.com",
+                                            "autocomplete": "off",
+                                            "data-bwignore": "true",
+                                            "spellcheck": False,
                                         }
                                     }
                                 ]
@@ -175,10 +185,13 @@ class MattermostMsg(_PluginBase):
                                     {
                                         "component": "VTextField",
                                         "props": {
-                                            "model": "token",
-                                            "label": "Bot访问令牌",
-                                            "type": "password",
-                                            "placeholder": "Bot Access Token",
+                                            "model": "mm_bot_key",
+                                            "label": "Bot访问密钥",
+                                            "type": "text",
+                                            "placeholder": "Mattermost Bot Access Token",
+                                            "autocomplete": "off",
+                                            "data-bwignore": "true",
+                                            "spellcheck": False,
                                         }
                                     }
                                 ]
@@ -198,9 +211,12 @@ class MattermostMsg(_PluginBase):
                                     {
                                         "component": "VTextField",
                                         "props": {
-                                            "model": "channel",
+                                            "model": "mm_room",
                                             "label": "频道",
                                             "placeholder": "频道ID 或 团队名/频道名",
+                                            "autocomplete": "off",
+                                            "data-bwignore": "true",
+                                            "spellcheck": False,
                                         }
                                     }
                                 ]
@@ -276,9 +292,9 @@ class MattermostMsg(_PluginBase):
         ], {
             "enabled": False,
             "onlyonce": False,
-            "server": "",
-            "token": "",
-            "channel": "",
+            "mm_host": "",
+            "mm_bot_key": "",
+            "mm_room": "",
             "send_image": True,
             "msgtypes": [],
         }
@@ -331,6 +347,19 @@ class MattermostMsg(_PluginBase):
         except Exception as e:
             logger.error(f"Mattermost 频道 {self._channel} 解析异常：{str(e)}")
         return None
+
+    def _start_test_message_thread(self):
+        """
+        后台发送测试消息，避免保存配置接口等待 Mattermost 网络请求。
+        """
+        try:
+            threading.Thread(
+                target=self._send_test_message,
+                name="mattermostmsg-test-message",
+                daemon=True,
+            ).start()
+        except Exception as e:
+            logger.error(f"Mattermost 测试消息线程启动异常：{str(e)}")
 
     def _send_test_message(self):
         """
