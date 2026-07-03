@@ -12,11 +12,11 @@ class MattermostMsg(_PluginBase):
     # 插件名称
     plugin_name = "Mattermost消息通知"
     # 插件描述
-    plugin_desc = "通过 Mattermost Bot 将 MoviePilot 通知推送到指定频道。"
+    plugin_desc = "通过 Mattermost Bot 将 MoviePilot 通知推送到指定或全部频道。"
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/kyalpha313/MoviePilot-MatterMost-Notification/main/icons/Mattermost_A.png"
     # 插件版本
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.3"
     # 插件作者
     plugin_author = "kyalpha313"
     # 作者主页
@@ -51,6 +51,7 @@ class MattermostMsg(_PluginBase):
     _token = None
     _channel = None
     _channel_id = None
+    _all_channel_ids = None
     _send_image = True
     _msgtypes = []
 
@@ -71,6 +72,7 @@ class MattermostMsg(_PluginBase):
             self._msgtypes = config.get("msgtypes") or []
 
         # 保存配置阶段不访问 Mattermost，避免外部网络异常影响 MoviePilot 保存接口
+        self._all_channel_ids = None
         self._channel_id = (
             self._channel if self._channel and "/" not in self._channel else None
         )
@@ -91,7 +93,7 @@ class MattermostMsg(_PluginBase):
             self._start_test_message_thread()
 
     def get_state(self) -> bool:
-        return bool(self._enabled and self._server and self._token and self._channel)
+        return bool(self._enabled and self._server and self._token)
 
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
@@ -187,9 +189,9 @@ class MattermostMsg(_PluginBase):
                                         "props": {
                                             "model": "mm_bot_key",
                                             "label": "Bot访问密钥",
-                                            "type": "text",
+                                            "type": "password",
                                             "placeholder": "Mattermost Bot Access Token",
-                                            "autocomplete": "off",
+                                            "autocomplete": "new-password",
                                             "data-bwignore": "true",
                                             "spellcheck": False,
                                         }
@@ -212,8 +214,8 @@ class MattermostMsg(_PluginBase):
                                         "component": "VTextField",
                                         "props": {
                                             "model": "mm_room",
-                                            "label": "频道",
-                                            "placeholder": "频道ID 或 团队名/频道名",
+                                            "label": "频道（可选）",
+                                            "placeholder": "留空=所有Bot已加入频道；或填频道ID / 团队名/频道名",
                                             "autocomplete": "off",
                                             "data-bwignore": "true",
                                             "spellcheck": False,
@@ -278,8 +280,11 @@ class MattermostMsg(_PluginBase):
                                             "variant": "tonal",
                                             "text": "使用前请先在 Mattermost 中创建 Bot 并复制访问令牌，"
                                                     "将 Bot 邀请进团队并加入目标频道。"
-                                                    "频道支持两种填法：频道ID（频道信息页可复制，推荐）"
+                                                    "频道留空表示发送到 Bot 已加入的所有团队频道；"
+                                                    "也支持两种指定填法：频道ID（频道信息页可复制，推荐）"
                                                     "或 团队名/频道名（URL中的名称，如 myteam/town-square）。"
+                                                    "附带海报图片仅在 MoviePilot 消息本身带有海报URL时生效；"
+                                                    "测试消息会使用插件图标演示图片效果。"
                                                     "消息类型不选表示全部发送。"
                                         }
                                     }
@@ -322,6 +327,15 @@ class MattermostMsg(_PluginBase):
         self._channel_id = self._resolve_channel_id()
         return self._channel_id
 
+    def _get_channel_ids(self) -> List[str]:
+        """
+        获取发送目标频道。频道为空时表示 all：发送到 Bot 已加入的全部团队频道。
+        """
+        if not self._channel:
+            return self._resolve_all_channel_ids()
+        channel_id = self._get_channel_id()
+        return [channel_id] if channel_id else []
+
     def _resolve_channel_id(self) -> Optional[str]:
         """
         频道配置含 "/" 时按 团队名/频道名 调用API解析，否则原样作为频道ID
@@ -347,6 +361,70 @@ class MattermostMsg(_PluginBase):
         except Exception as e:
             logger.error(f"Mattermost 频道 {self._channel} 解析异常：{str(e)}")
         return None
+
+    def _resolve_all_channel_ids(self) -> List[str]:
+        """
+        查询 Bot 已加入的所有团队频道。只包含公开/私有团队频道，排除私聊、群聊和归档频道。
+        """
+        if self._all_channel_ids is not None:
+            return self._all_channel_ids
+
+        self._all_channel_ids = []
+        try:
+            res = RequestUtils(headers=self._headers()).get_res(
+                f"{self._server}/api/v4/users/me/teams")
+            if res is None or res.status_code != 200:
+                status = res.status_code if res is not None else "无响应"
+                logger.error(f"Mattermost 获取 Bot 所属团队失败（{status}）")
+                return []
+            try:
+                teams = res.json()
+            except Exception as e:
+                logger.error(f"Mattermost 团队列表响应异常：{str(e)}")
+                return []
+            if not isinstance(teams, list):
+                logger.error("Mattermost 团队列表响应格式异常")
+                return []
+
+            seen = set()
+            for team in teams:
+                team_id = (team or {}).get("id")
+                if not team_id:
+                    continue
+                channels_res = RequestUtils(headers=self._headers()).get_res(
+                    f"{self._server}/api/v4/users/me/teams/{team_id}/channels")
+                if channels_res is None or channels_res.status_code != 200:
+                    status = (channels_res.status_code
+                              if channels_res is not None else "无响应")
+                    logger.warn(f"Mattermost 获取团队频道失败（team={team_id}, {status}）")
+                    continue
+                try:
+                    channels = channels_res.json()
+                except Exception as e:
+                    logger.warn(f"Mattermost 团队频道响应异常（team={team_id}）：{str(e)}")
+                    continue
+                if not isinstance(channels, list):
+                    logger.warn(f"Mattermost 团队频道响应格式异常（team={team_id}）")
+                    continue
+                for channel in channels:
+                    if not isinstance(channel, dict):
+                        continue
+                    if channel.get("type") not in ("O", "P"):
+                        continue
+                    if channel.get("delete_at"):
+                        continue
+                    channel_id = channel.get("id")
+                    if channel_id and channel_id not in seen:
+                        seen.add(channel_id)
+                        self._all_channel_ids.append(channel_id)
+
+            logger.info(f"Mattermost all 模式已解析到 "
+                        f"{len(self._all_channel_ids)} 个频道")
+            return self._all_channel_ids
+        except Exception as e:
+            logger.error(f"Mattermost all 模式频道解析异常：{str(e)}")
+            self._all_channel_ids = []
+            return []
 
     def _start_test_message_thread(self):
         """
@@ -385,6 +463,7 @@ class MattermostMsg(_PluginBase):
                 return
             self._send_msg(title="Mattermost 消息测试通知",
                            text="Mattermost 消息通知插件已启用。",
+                           image=self.plugin_icon,
                            mtype_name=None)
         except Exception as e:
             logger.error(f"Mattermost 测试消息发送异常：{str(e)}")
@@ -398,9 +477,9 @@ class MattermostMsg(_PluginBase):
             if not self._server or not self._token:
                 logger.warn("Mattermost 参数未配置，无法发送消息")
                 return
-            channel_id = self._get_channel_id()
-            if not channel_id:
-                logger.warn("Mattermost 频道ID无效，无法发送消息（请检查频道配置）")
+            channel_ids = self._get_channel_ids()
+            if not channel_ids:
+                logger.warn("Mattermost 频道无效或未找到Bot已加入频道，无法发送消息")
                 return
             title = title or ""
             text = text or ""
@@ -417,20 +496,7 @@ class MattermostMsg(_PluginBase):
                 attachment["title_link"] = link
             if self._send_image and image and str(image).startswith("http"):
                 attachment["image_url"] = image
-            payload = {
-                "channel_id": channel_id,
-                "message": "",
-                "props": {"attachments": [attachment]},
-            }
-            res = RequestUtils(headers=self._headers()).post_res(
-                f"{self._server}/api/v4/posts", json=payload)
-            if res is not None and res.status_code == 201:
-                logger.info(f"Mattermost 消息发送成功：{title}")
-                return
-            status = res.status_code if res is not None else "无响应"
-            body = res.text[:200] if res is not None else ""
-            logger.warn(f"Mattermost 附件消息发送失败（{status} {body}），"
-                        f"尝试降级为纯文本发送")
+
             # 降级：纯 Markdown 文本
             lines = []
             if title:
@@ -441,19 +507,35 @@ class MattermostMsg(_PluginBase):
                 lines.append(f"[查看详情]({link})")
             if self._send_image and image and str(image).startswith("http"):
                 lines.append(f"![image]({image})")
-            fallback_payload = {
-                "channel_id": channel_id,
-                "message": "\n\n".join(lines),
-            }
-            res = RequestUtils(headers=self._headers()).post_res(
-                f"{self._server}/api/v4/posts", json=fallback_payload)
-            if res is not None and res.status_code == 201:
-                logger.info(f"Mattermost 纯文本消息发送成功：{title}")
-            elif res is not None:
-                logger.warn(f"Mattermost 消息发送失败，错误码：{res.status_code}，"
-                            f"响应：{res.text[:200]}")
-            else:
-                logger.warn("Mattermost 消息发送失败：未获取到返回信息")
+
+            for channel_id in channel_ids:
+                payload = {
+                    "channel_id": channel_id,
+                    "message": "",
+                    "props": {"attachments": [attachment]},
+                }
+                res = RequestUtils(headers=self._headers()).post_res(
+                    f"{self._server}/api/v4/posts", json=payload)
+                if res is not None and res.status_code == 201:
+                    logger.info(f"Mattermost 消息发送成功：{title}")
+                    continue
+                status = res.status_code if res is not None else "无响应"
+                body = res.text[:200] if res is not None else ""
+                logger.warn(f"Mattermost 附件消息发送失败（{status} {body}），"
+                            f"尝试降级为纯文本发送")
+                fallback_payload = {
+                    "channel_id": channel_id,
+                    "message": "\n\n".join(lines),
+                }
+                res = RequestUtils(headers=self._headers()).post_res(
+                    f"{self._server}/api/v4/posts", json=fallback_payload)
+                if res is not None and res.status_code == 201:
+                    logger.info(f"Mattermost 纯文本消息发送成功：{title}")
+                elif res is not None:
+                    logger.warn(f"Mattermost 消息发送失败，错误码：{res.status_code}，"
+                                f"响应：{res.text[:200]}")
+                else:
+                    logger.warn("Mattermost 消息发送失败：未获取到返回信息")
         except Exception as e:
             logger.error(f"Mattermost 消息发送异常：{str(e)}")
 

@@ -13,7 +13,7 @@ def _make_plugin(config):
 class TestMetadataAndForm:
     def test_metadata(self):
         assert MattermostMsg.plugin_name == "Mattermost消息通知"
-        assert MattermostMsg.plugin_version == "1.0.2"
+        assert MattermostMsg.plugin_version == "1.0.3"
         assert MattermostMsg.plugin_config_prefix == "mattermostmsg_"
         assert MattermostMsg.auth_level == 1
 
@@ -84,8 +84,8 @@ class TestMetadataAndForm:
         room_props = find_props_by_model(form, "mm_room")
         assert server_props["autocomplete"] == "off"
         assert server_props["data-bwignore"] == "true"
-        assert token_props["type"] == "text"
-        assert token_props["autocomplete"] == "off"
+        assert token_props["type"] == "password"
+        assert token_props["autocomplete"] == "new-password"
         assert token_props["data-bwignore"] == "true"
         assert room_props["autocomplete"] == "off"
         assert room_props["data-bwignore"] == "true"
@@ -97,9 +97,13 @@ class TestState:
 
     def test_state_false_when_disabled_or_missing(self, base_config):
         for override in ({"enabled": False}, {"mm_host": ""},
-                         {"mm_bot_key": ""}, {"mm_room": ""}):
+                         {"mm_bot_key": ""}):
             config = {**base_config, **override}
             assert _make_plugin(config).get_state() is False
+
+    def test_state_true_without_channel_for_all_mode(self, base_config):
+        plugin = _make_plugin({**base_config, "mm_room": ""})
+        assert plugin.get_state() is True
 
     def test_server_trailing_slash_stripped(self, base_config):
         plugin = _make_plugin({**base_config, "mm_host": "https://mm.example.com/"})
@@ -279,6 +283,7 @@ class TestSendToMattermost:
     def test_skips_when_channel_id_missing(self, base_config, fake_http):
         plugin = _make_plugin({**base_config, "mm_room": ""})
         plugin._send_msg(title="t", text="x")
+        # 空频道表示 all，需要先枚举 Bot 加入的频道；默认假响应没有频道列表。
         assert [c for c in fake_http.calls if c["method"] == "post"] == []
 
 
@@ -312,6 +317,45 @@ class TestChannelResolution:
         plugin = _make_plugin({**base_config, "mm_room": "myteam/nochan"})
         plugin._send_msg(title="t", text="x")
         assert plugin._channel_id is None
+
+    def test_empty_channel_sends_to_joined_team_channels(
+            self, base_config, fake_http):
+        fake_http.queue.extend([
+            ("get", "/api/v4/users/me/teams",
+             fake_http.make_response(200, [
+                 {"id": "team1"},
+                 {"id": "team2"},
+             ])),
+            ("get", "/api/v4/users/me/teams/team1/channels",
+             fake_http.make_response(200, [
+                 {"id": "public1", "type": "O", "delete_at": 0},
+                 {"id": "private1", "type": "P", "delete_at": 0},
+                 {"id": "dm1", "type": "D", "delete_at": 0},
+             ])),
+            ("get", "/api/v4/users/me/teams/team2/channels",
+             fake_http.make_response(200, [
+                 {"id": "private1", "type": "P", "delete_at": 0},
+                 {"id": "group1", "type": "G", "delete_at": 0},
+                 {"id": "archived1", "type": "O", "delete_at": 123},
+                 {"id": "public2", "type": "O", "delete_at": 0},
+             ])),
+        ])
+        plugin = _make_plugin({**base_config, "mm_room": ""})
+        plugin._send_msg(title="t", text="x")
+
+        posts = [c for c in fake_http.calls if c["method"] == "post"]
+        assert [p["json"]["channel_id"] for p in posts] == [
+            "public1", "private1", "public2"
+        ]
+
+    def test_empty_channel_handles_team_listing_failure(
+            self, base_config, fake_http):
+        fake_http.queue.append(
+            ("get", "/api/v4/users/me/teams",
+             fake_http.make_response(403, text="forbidden")))
+        plugin = _make_plugin({**base_config, "mm_room": ""})
+        plugin._send_msg(title="t", text="x")
+        assert [c for c in fake_http.calls if c["method"] == "post"] == []
 
     def test_no_resolution_when_config_incomplete(self, base_config, fake_http):
         plugin = _make_plugin({**base_config, "mm_bot_key": "",
@@ -356,6 +400,14 @@ class TestOnlyOnce:
         assert len(posts) == 1
         att = posts[0]["json"]["props"]["attachments"][0]
         assert "测试" in att["title"]
+        assert att["image_url"] == MattermostMsg.plugin_icon
+
+    def test_send_test_message_respects_image_toggle(self, base_config, fake_http):
+        plugin = _make_plugin({**base_config, "send_image": False})
+        plugin._send_test_message()
+        posts = [c for c in fake_http.calls if c["method"] == "post"]
+        att = posts[0]["json"]["props"]["attachments"][0]
+        assert "image_url" not in att
 
     def test_no_test_message_when_token_invalid(self, base_config, fake_http):
         fake_http.queue.append(

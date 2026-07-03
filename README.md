@@ -14,9 +14,9 @@ https://github.com/kyalpha313/MoviePilot-MatterMost-Notification
 
 ## 插件列表
 
-### Mattermost消息通知 (v1.0.2)
+### Mattermost消息通知 (v1.0.3)
 
-通过 Mattermost Bot 将 MoviePilot 的各类通知（下载、入库、订阅、站点等）推送到指定频道，
+通过 Mattermost Bot 将 MoviePilot 的各类通知（下载、入库、订阅、站点等）推送到指定或全部频道，
 富附件渲染（按消息类型着色 + 标题链接 + 海报图），发送失败自动降级纯文本。
 
 **前置准备（Mattermost 侧）：**
@@ -31,9 +31,9 @@ https://github.com/kyalpha313/MoviePilot-MatterMost-Notification
 | 配置项 | 说明 |
 |---|---|
 | 服务器地址 | Mattermost 地址，如 `https://mm.example.com` |
-| Bot访问令牌 | 上面第 1 步复制的 Access Token |
-| 频道 | 频道 ID（推荐）；或 `团队名/频道名`（URL 中的名称） |
-| 附带海报图片 | 通知附带媒体海报（需客户端可访问图片外链） |
+| Bot访问密钥 | 上面第 1 步复制的 Access Token（表单中隐藏显示） |
+| 频道 | 留空 = 发送到 Bot 已加入的所有公开/私有团队频道；也可填频道 ID（推荐）或 `团队名/频道名`（URL 中的名称） |
+| 附带海报图片 | 通知本身带有媒体海报 URL 时附带；测试消息使用插件图标演示图片效果 |
 | 消息类型 | 勾选要转发的类型；**不选 = 全部发送** |
 
 配置完成后打开「测试插件」开关并保存，Bot 应在频道中发出一条测试消息。
